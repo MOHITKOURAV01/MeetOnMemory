@@ -27,10 +27,16 @@ class SpeakerIdentificationService {
    * @param {string} mappedName
    */
   async applyMapping(meetingId, originalLabel, mappedName) {
-    const label = String(originalLabel ?? "");
-    if (!label.trim()) {
+    // Trimmed, not merely checked for emptiness: the label is compared against
+    // stored values (`segment.speaker === label`), so `" #1 "` would otherwise
+    // pass validation, match nothing, and complete without applying the
+    // mapping the caller asked for.
+    const label = String(originalLabel ?? "").trim();
+    if (!label) {
       throw new Error("Speaker label must not be empty");
     }
+
+    const replacement = String(mappedName ?? "");
 
     // Built once and reused for both the summary and the action item pass.
     // `lastIndex` on a `/g` regex is per-object state, so sharing one instance
@@ -39,13 +45,28 @@ class SpeakerIdentificationService {
     // constant.
     const labelPattern = wordBoundaryRegExp(label, "g");
 
+    // The *replacement* string is the other half of this bug, and it is the
+    // half that escaping the pattern does not fix: `String.prototype.replace`
+    // expands `$&`, `` $` ``, `$'` and `$1`…`$9` inside the replacement.
+    //
+    //   "Speaker 1 opened the review.".replace(/\bSpeaker 1\b/g, "$`")
+    //   -> " opened the review."
+    //
+    //   ...replace(/\bSpeaker 1\b/g, "A$'B")
+    //   -> "A opened the review.B opened the review."
+    //
+    // `mappedName` is caller-supplied, so a mapped name of `` $` `` destroys
+    // the summary exactly as a wildcard label did. A function replacement is
+    // never interpreted, so this is literal by construction.
+    const insertLiteral = () => replacement;
+
     // 1. Update Transcript Segments
     const transcript = await Transcript.findOne({ meeting: meetingId });
     if (transcript) {
       let isTranscriptModified = false;
       for (const segment of transcript.segments) {
         if (segment.speaker === label) {
-          segment.speaker = mappedName;
+          segment.speaker = replacement;
           isTranscriptModified = true;
         }
       }
@@ -61,7 +82,7 @@ class SpeakerIdentificationService {
 
       if (meeting.summary && meeting.summary.includes(label)) {
         // Use regex for word boundary to avoid partial matches
-        const replaced = meeting.summary.replace(labelPattern, mappedName);
+        const replaced = meeting.summary.replace(labelPattern, insertLiteral);
         // `includes` finds the label as a substring; the boundary pattern may
         // still match nothing (e.g. the label appears only inside a longer
         // word). Only mark the document dirty if something actually changed,
@@ -80,9 +101,9 @@ class SpeakerIdentificationService {
         );
         if (index !== -1) {
           if (typeof attendees[index] === "string") {
-            attendees[index] = mappedName;
+            attendees[index] = replacement;
           } else if (attendees[index].name) {
-            attendees[index].name = mappedName;
+            attendees[index].name = replacement;
           }
           meeting.markModified("structuredMoM");
           isMeetingModified = true;
@@ -103,12 +124,12 @@ class SpeakerIdentificationService {
       let updateDoc = {};
 
       if (item.owner === label) {
-        updateDoc.owner = mappedName;
+        updateDoc.owner = replacement;
         isModified = true;
       }
 
       if (item.text && item.text.includes(label)) {
-        const replacedText = item.text.replace(labelPattern, mappedName);
+        const replacedText = item.text.replace(labelPattern, insertLiteral);
         if (replacedText !== item.text) {
           updateDoc.text = replacedText;
           isModified = true;

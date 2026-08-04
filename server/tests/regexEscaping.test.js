@@ -13,6 +13,11 @@
  * only `utils/regexUtils.js` added, since the suite imports it), 16 of these
  * fail — the false-collision cases in tags and glossary, the `SyntaxError`
  * cases, glossary detection of `C++`, and every speaker-mapping case.
+ *
+ * Per-test isolation comes from the global `afterEach` in `tests/setup.js`,
+ * which wipes every collection between tests. The `countDocuments(...)`
+ * assertions below are load-bearing for that too: they would fail immediately
+ * if an earlier test's tags survived into a later one.
  */
 
 import mongoose from "mongoose";
@@ -590,6 +595,129 @@ describe("speaker mapping (Issue #1157)", () => {
 
     const after = await Meeting.findById(meeting._id);
     expect(after.summary).toBe("Then Ada asked about scope.");
+  });
+
+  // Raised in review of #1157: escaping the *pattern* fixes only half of this.
+  // `String.prototype.replace` expands `$&`, `` $` ``, `$'` and `$1`…`$9` in
+  // the *replacement* string, and `mappedName` is caller-supplied too.
+  describe("replacement string is inserted literally", () => {
+    it("does not let a `$`` mapped name swallow the summary", async () => {
+      const meeting = await seedMeeting();
+
+      await speakerIdentificationService.applyMapping(
+        meeting._id,
+        "Speaker 1",
+        "$`",
+      );
+
+      const after = await Meeting.findById(meeting._id);
+      // With a string replacement this becomes " opened. Speaker 2 raised…",
+      // i.e. the preceding text is duplicated and the label is lost.
+      expect(after.summary).toBe(
+        "$` opened. Speaker 2 raised the deploy risk.",
+      );
+    });
+
+    it("does not let a `$'` mapped name duplicate the trailing text", async () => {
+      const meeting = await seedMeeting();
+
+      await speakerIdentificationService.applyMapping(
+        meeting._id,
+        "Speaker 1",
+        "A$'B",
+      );
+
+      const after = await Meeting.findById(meeting._id);
+      expect(after.summary).toBe(
+        "A$'B opened. Speaker 2 raised the deploy risk.",
+      );
+    });
+
+    it("inserts `$&` verbatim rather than re-inserting the match", async () => {
+      const meeting = await seedMeeting();
+
+      await speakerIdentificationService.applyMapping(
+        meeting._id,
+        "Speaker 1",
+        "$&",
+      );
+
+      const after = await Meeting.findById(meeting._id);
+      expect(after.summary).toBe(
+        "$& opened. Speaker 2 raised the deploy risk.",
+      );
+    });
+
+    it("applies the same guard to action item text", async () => {
+      const meeting = await seedMeeting();
+
+      await ActionItem.create({
+        text: "Speaker 1 to confirm the rollout window",
+        owner: "Speaker 1",
+        organization: ORG_A,
+        sourceMeetingId: meeting._id,
+      });
+
+      await speakerIdentificationService.applyMapping(
+        meeting._id,
+        "Speaker 1",
+        "$`",
+      );
+
+      const item = await ActionItem.findOne({ sourceMeetingId: meeting._id });
+      expect(item.text).toBe("$` to confirm the rollout window");
+      expect(item.owner).toBe("$`");
+    });
+
+    it("still handles an ordinary name containing a dollar sign", async () => {
+      const meeting = await seedMeeting();
+
+      await speakerIdentificationService.applyMapping(
+        meeting._id,
+        "Speaker 1",
+        "A$B Consulting",
+      );
+
+      const after = await Meeting.findById(meeting._id);
+      expect(after.summary).toBe(
+        "A$B Consulting opened. Speaker 2 raised the deploy risk.",
+      );
+    });
+  });
+
+  // Also raised in review: the label is compared against stored values, so it
+  // has to be trimmed rather than merely checked for emptiness.
+  it("trims a padded label so the mapping still applies", async () => {
+    const meeting = await seedMeeting();
+
+    await speakerIdentificationService.applyMapping(
+      meeting._id,
+      "  Speaker 1  ",
+      "Ada",
+    );
+
+    const after = await Meeting.findById(meeting._id);
+    expect(after.summary).toBe("Ada opened. Speaker 2 raised the deploy risk.");
+  });
+
+  it("trims a padded label when rewriting transcript segments", async () => {
+    const meeting = await seedMeeting();
+
+    await Transcript.create({
+      meeting: meeting._id,
+      segments: [
+        { speaker: "Speaker 1", text: "Morning", startTime: 0, endTime: 2 },
+      ],
+    });
+
+    await speakerIdentificationService.applyMapping(
+      meeting._id,
+      " Speaker 1 ",
+      "Ada",
+    );
+
+    const transcript = await Transcript.findOne({ meeting: meeting._id });
+    expect(transcript.segments[0].speaker).toBe("Ada");
   });
 
   it("refuses an empty label rather than rewriting the document", async () => {
