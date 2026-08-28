@@ -4,6 +4,7 @@ import {
   updateTaskStatus,
 } from "../services/followUpWorkflowService.js";
 import mongoose from "mongoose";
+import { parsePagination, buildPaginationMeta } from "../utils/pagination.js";
 
 /**
  * Follow-Up Controller
@@ -17,7 +18,7 @@ import mongoose from "mongoose";
  */
 export const getTasks = async (req, res) => {
   try {
-    const { status, assignee, page = 1, limit = 20 } = req.query;
+    const { status, assignee } = req.query;
     const userId = req.user._id;
     const organizationId = req.user.organization;
 
@@ -25,6 +26,11 @@ export const getTasks = async (req, res) => {
 
     // Filter by assignee (default to current user)
     if (assignee) {
+      // An unvalidated value reached the query as-is and threw a CastError,
+      // which the catch-all reported as a 500 (Issue #2573).
+      if (!mongoose.Types.ObjectId.isValid(String(assignee))) {
+        return res.status(400).json({ message: "Invalid assignee id" });
+      }
       query.assignee = assignee;
     } else {
       query.assignee = userId;
@@ -43,26 +49,30 @@ export const getTasks = async (req, res) => {
       query.$or = [{ snoozedUntil: null }, { snoozedUntil: { $lte: now } }];
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    // `(parseInt(page) - 1) * parseInt(limit)` had no ceiling, no floor and no
+    // radix. `?limit=1000000` streamed the whole collection through three
+    // populates; `?page=abc` produced a NaN skip that MongoDB rejects as a
+    // 500; `?limit=0` means *no limit* in Mongoose, so asking for zero rows
+    // returned all of them and reported `totalPages: Infinity`.
+    const { page, limit, skip } = parsePagination(req.query, {
+      defaultLimit: 20,
+      maxLimit: 100,
+    });
 
-    const tasks = await FollowUpTask.find(query)
-      .populate("assignee", "name email profilePicture")
-      .populate("meeting", "title date")
-      .populate("completedBy", "name email")
-      .sort({ deadline: 1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    const total = await FollowUpTask.countDocuments(query);
+    const [tasks, total] = await Promise.all([
+      FollowUpTask.find(query)
+        .populate("assignee", "name email profilePicture")
+        .populate("meeting", "title date")
+        .populate("completedBy", "name email")
+        .sort({ deadline: 1 })
+        .skip(skip)
+        .limit(limit),
+      FollowUpTask.countDocuments(query),
+    ]);
 
     res.status(200).json({
       tasks,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        totalPages: Math.ceil(total / parseInt(limit)),
-      },
+      pagination: buildPaginationMeta({ total, page, limit }),
     });
   } catch (error) {
     console.error("Error fetching tasks:", error);

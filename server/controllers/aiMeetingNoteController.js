@@ -1,4 +1,5 @@
 import AiMeetingNote from "../models/aiMeetingNoteModel.js";
+import { parsePagination, buildPaginationMeta } from "../utils/pagination.js";
 
 /**
  * Built-in reusable note templates
@@ -296,8 +297,6 @@ export const getNotes = async (req, res) => {
       endDate,
       sortBy = "date",
       sortOrder = "desc",
-      page = 1,
-      limit = 20,
     } = req.query;
 
     const query = { organization: organizationId };
@@ -325,14 +324,20 @@ export const getNotes = async (req, res) => {
       if (endDate) query.date.$lte = new Date(endDate);
     }
 
-    const skip = (Math.max(1, Number(page)) - 1) * Math.max(1, Number(limit));
+    // `Math.max(1, ...)` guarded `skip` but not `.limit()`: `?limit=0` means
+    // *no limit* in Mongoose so the whole collection came back, `?limit=abc`
+    // passed NaN through, and there was no ceiling at all (Issue #2573).
+    const { page, limit, skip } = parsePagination(req.query, {
+      defaultLimit: 20,
+      maxLimit: 100,
+    });
     const sort = { [sortBy]: sortOrder === "asc" ? 1 : -1 };
 
     const [notes, total] = await Promise.all([
       AiMeetingNote.find(query)
         .sort(sort)
         .skip(skip)
-        .limit(Number(limit))
+        .limit(limit)
         .populate("meeting", "title date meetingType")
         .populate("createdBy", "name email")
         .populate("reviewedBy", "name email")
@@ -340,15 +345,16 @@ export const getNotes = async (req, res) => {
       AiMeetingNote.countDocuments(query),
     ]);
 
+    const meta = buildPaginationMeta({ total, page, limit });
+
     return res.status(200).json({
       success: true,
       data: {
         notes,
         pagination: {
-          total,
-          page: Number(page),
-          limit: Number(limit),
-          pages: Math.ceil(total / Number(limit)) || 1,
+          ...meta,
+          // Retained so existing clients reading `pages` keep working.
+          pages: meta.totalPages || 1,
         },
       },
     });

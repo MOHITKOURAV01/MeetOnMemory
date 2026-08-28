@@ -1,4 +1,6 @@
+import mongoose from "mongoose";
 import ActionItemChangeLog from "../models/actionItemChangeLogModel.js";
+import { parsePagination, buildPaginationMeta } from "../utils/pagination.js";
 
 /**
  * @desc Get changelogs for a specific action item
@@ -8,29 +10,53 @@ import ActionItemChangeLog from "../models/actionItemChangeLogModel.js";
 export const getChangeLogs = async (req, res) => {
   try {
     const { id } = req.params;
-    const { type, userId, page = 1, limit = 50 } = req.query;
+    const { type, userId } = req.query;
+
+    if (!mongoose.Types.ObjectId.isValid(String(id))) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid action item id" });
+    }
 
     const query = { actionItemId: id };
     if (type) query.changeType = type;
-    if (userId) query.changedBy = userId;
 
-    const skip = (page - 1) * limit;
+    if (userId) {
+      if (!mongoose.Types.ObjectId.isValid(String(userId))) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid userId filter" });
+      }
+      query.changedBy = userId;
+    }
 
-    const logs = await ActionItemChangeLog.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit))
-      .populate("changedBy", "name avatar email");
+    // `const skip = (page - 1) * limit` worked only through JS numeric
+    // coercion — `page` and `limit` are strings off `req.query` — and had no
+    // ceiling, so `?limit=999999` streamed the entire change log with a
+    // populate on every row (Issue #2573).
+    const { page, limit, skip } = parsePagination(req.query, {
+      defaultLimit: 50,
+      maxLimit: 200,
+    });
 
-    const total = await ActionItemChangeLog.countDocuments(query);
+    const [logs, total] = await Promise.all([
+      ActionItemChangeLog.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("changedBy", "name avatar email"),
+      ActionItemChangeLog.countDocuments(query),
+    ]);
+
+    const meta = buildPaginationMeta({ total, page, limit });
 
     res.status(200).json({
       success: true,
       data: logs,
       pagination: {
-        total,
-        page: Number(page),
-        pages: Math.ceil(total / limit),
+        ...meta,
+        // Retained so existing clients reading `pages` keep working.
+        pages: meta.totalPages,
       },
     });
   } catch (error) {

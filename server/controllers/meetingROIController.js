@@ -1,4 +1,5 @@
 import MeetingROI from "../models/meetingROIModel.js";
+import { parsePagination, buildPaginationMeta } from "../utils/pagination.js";
 
 /**
  * Helper to calculate cost and ROI fields for payload/instance
@@ -80,8 +81,6 @@ export const getROIRecords = async (req, res) => {
       endDate,
       sortBy = "date",
       sortOrder = "desc",
-      page = 1,
-      limit = 20,
     } = req.query;
 
     const query = { organization: organizationId };
@@ -108,28 +107,34 @@ export const getROIRecords = async (req, res) => {
       if (endDate) query.date.$lte = new Date(endDate);
     }
 
-    const skip = (Math.max(1, Number(page)) - 1) * Math.max(1, Number(limit));
+    // Same shape as getNotes: `Math.max(1, ...)` guarded `skip` but not
+    // `.limit()`, so `?limit=0` returned the whole collection (Issue #2573).
+    const { page, limit, skip } = parsePagination(req.query, {
+      defaultLimit: 20,
+      maxLimit: 100,
+    });
     const sort = { [sortBy]: sortOrder === "asc" ? 1 : -1 };
 
     const [records, total] = await Promise.all([
       MeetingROI.find(query)
         .sort(sort)
         .skip(skip)
-        .limit(Number(limit))
+        .limit(limit)
         .populate("meeting", "title date meetingType")
         .lean(),
       MeetingROI.countDocuments(query),
     ]);
+
+    const meta = buildPaginationMeta({ total, page, limit });
 
     return res.status(200).json({
       success: true,
       data: {
         records,
         pagination: {
-          total,
-          page: Number(page),
-          limit: Number(limit),
-          pages: Math.ceil(total / Number(limit)) || 1,
+          ...meta,
+          // Retained so existing clients reading `pages` keep working.
+          pages: meta.totalPages || 1,
         },
       },
     });
