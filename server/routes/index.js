@@ -322,6 +322,9 @@ router.use("/api/api-keys", apiKeyRoutes);
 import meetingRetrospectiveRoutes from "./meetingRetrospectiveRoutes.js";
 router.use("/api/meeting-retrospectives", meetingRetrospectiveRoutes);
 
+import customRoleRoutes from "./customRoleRoutes.js";
+router.use("/api/custom-roles", customRoleRoutes);
+
 import meetingQuestionRoutes from "./meetingQuestionRoutes.js";
 router.use("/api", meetingQuestionRoutes);
 
