@@ -1,5 +1,5 @@
-import AiMeetingNote from "../models/aiMeetingNoteModel.js";
 import { literalContainsFilter } from "../utils/regexUtils.js";
+import AiMeetingNote from "../models/aiMeetingNoteModel.js";
 
 /**
  * Built-in reusable note templates
