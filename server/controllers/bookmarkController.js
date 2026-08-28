@@ -2,6 +2,7 @@ import Bookmark from "../models/bookmarkModel.js";
 import Meeting from "../models/meetingModel.js";
 import mongoose from "mongoose";
 import { isSameOrganization } from "../utils/authUtils.js";
+import { escapeRegExp, normalizeSearchTerm } from "../utils/regexUtils.js";
 
 // @desc    Toggle bookmark (add if missing, remove if exists)
 // @route   POST /api/bookmarks/toggle
@@ -103,9 +104,16 @@ export const getBookmarks = async (req, res) => {
       select: "title date time duration _id",
     });
 
+    // `new RegExp(search, "i")` compiled caller-supplied text (Issue #2572).
+    // Here the pattern is evaluated *in Node* over every bookmark already
+    // loaded into memory, so a catastrophically backtracking value such as
+    // `(a+)+$` blocked the event loop for the whole process rather than
+    // slowing one query. Escaping removes the wildcard half of the problem;
+    // the length cap in `normalizeSearchTerm` removes the cost half.
     let filteredBookmarks = bookmarks;
-    if (search && typeof search === "string") {
-      const regex = new RegExp(search, "i");
+    const searchTerm = normalizeSearchTerm(search);
+    if (searchTerm) {
+      const regex = new RegExp(escapeRegExp(searchTerm), "i");
       filteredBookmarks = bookmarks.filter(
         (b) =>
           regex.test(b.notes || "") ||

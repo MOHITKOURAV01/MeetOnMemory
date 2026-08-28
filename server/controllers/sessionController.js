@@ -1,6 +1,11 @@
 import SessionCard from "../models/sessionCardModel.js";
 import { generateSessionCardAI } from "../services/GenerativeAIService.js";
 import { sendSuccess, sendError } from "../utils/responseHandler.js";
+import {
+  literalContainsFilter,
+  literalRegExp,
+  normalizeSearchTerm,
+} from "../utils/regexUtils.js";
 
 // @desc    Generate AI Session Card & Persist to Org Library
 // @route   POST /api/sessions/generate
@@ -101,33 +106,45 @@ export const getSessions = async (req, res) => {
 
     const filter = { organization: orgId };
 
-    const searchTerm = (search || q || "").trim();
-    if (searchTerm) {
-      const searchRegex = new RegExp(
-        searchTerm.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&"),
-        "i",
-      );
-      filter.$or = [
-        { sessionTitle: searchRegex },
-        { eventName: searchRegex },
-        { speaker: searchRegex },
-        { speakerTitle: searchRegex },
-        { summary: searchRegex },
-        { keywords: searchRegex },
-        { tags: searchRegex },
-      ];
+    // `search` and `tag` are independent criteria, so each gets its own `$and`
+    // branch. The previous code pushed the tag conditions onto the *same*
+    // `$or` array the search had populated, which turned "budget AND tagged
+    // q3" into "budget OR tagged q3" and widened the result set (Issue #2572).
+    const conditions = [];
+
+    const searchFilter = literalContainsFilter(search || q);
+    if (searchFilter) {
+      conditions.push({
+        $or: [
+          { sessionTitle: searchFilter },
+          { eventName: searchFilter },
+          { speaker: searchFilter },
+          { speakerTitle: searchFilter },
+          { summary: searchFilter },
+          { keywords: searchFilter },
+          { tags: searchFilter },
+        ],
+      });
     }
 
-    if (event && event.trim()) {
-      filter.eventName = new RegExp(`^${event.trim()}$`, "i");
+    // `new RegExp(`^${event.trim()}$`)` compiled whatever the caller sent:
+    // `?event=C++` threw `SyntaxError: Nothing to repeat` and surfaced as a
+    // 500, and `?event=.*` matched every session in the organization.
+    const eventTerm = normalizeSearchTerm(event);
+    if (eventTerm) {
+      conditions.push({ eventName: literalRegExp(eventTerm) });
     }
 
-    if (tag && tag.trim()) {
-      filter.$or = filter.$or || [];
-      filter.$or.push(
-        { keywords: new RegExp(`^${tag.trim()}$`, "i") },
-        { tags: new RegExp(`^${tag.trim()}$`, "i") },
-      );
+    const tagTerm = normalizeSearchTerm(tag);
+    if (tagTerm) {
+      const tagRegex = literalRegExp(tagTerm);
+      conditions.push({
+        $or: [{ keywords: tagRegex }, { tags: tagRegex }],
+      });
+    }
+
+    if (conditions.length > 0) {
+      filter.$and = conditions;
     }
 
     const [sessions, total] = await Promise.all([

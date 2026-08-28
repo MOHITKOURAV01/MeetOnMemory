@@ -1,4 +1,5 @@
 import AiMeetingNote from "../models/aiMeetingNoteModel.js";
+import { literalContainsFilter } from "../utils/regexUtils.js";
 
 /**
  * Built-in reusable note templates
@@ -302,9 +303,17 @@ export const getNotes = async (req, res) => {
 
     const query = { organization: organizationId };
 
-    if (search && search.trim()) {
-      const regex = new RegExp(search.trim(), "i");
-      query.$or = [{ title: regex }, { summary: regex }, { tags: regex }];
+    // `new RegExp(search.trim(), "i")` compiled caller-supplied text: `?search=(`
+    // threw and surfaced as a 500, `?search=.*` matched every note, and
+    // `?search=(a+)+$` was handed to MongoDB as an unbounded `$regex` and
+    // evaluated per document (Issue #2572).
+    const searchFilter = literalContainsFilter(search);
+    if (searchFilter) {
+      query.$or = [
+        { title: searchFilter },
+        { summary: searchFilter },
+        { tags: searchFilter },
+      ];
     }
 
     if (meetingType && meetingType !== "all") {
