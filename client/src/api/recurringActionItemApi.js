@@ -1,4 +1,8 @@
-import apiClient from "./apiClient";
+// The shared client lives at `services/apiClient` — there is no
+// `api/apiClient`, so this import could not resolve (Issue #2574). The module
+// is only outside Rollup's graph today because `RecurringActionItems.jsx` is
+// not yet rendered anywhere; mounting it (#2443) breaks the build.
+import apiClient from "../services/apiClient.js";
 
 export const getRecurringActionItems = async () => {
   const response = await apiClient.get("/api/recurring-action-items");
