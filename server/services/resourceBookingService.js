@@ -1,6 +1,14 @@
 import PhysicalResource from "../models/physicalResourceModel.js";
 import ResourceBooking from "../models/resourceBookingModel.js";
 
+/**
+ * Physical resource booking service.
+ *
+ * Tenant scoping note (Issue #2571): the methods that take an id — a booking,
+ * a meeting, a resource — now also take the organization it must belong to and
+ * put it in the query. Checking ownership after the fact leaks existence; a
+ * filter that does not match simply returns nothing.
+ */
 class ResourceBookingService {
   /**
    * Check if a resource is available for a given time window.
@@ -56,6 +64,15 @@ class ResourceBookingService {
 
   /**
    * Create a new resource booking.
+   *
+   * The resource is looked up *within* `organizationId` first. Without that,
+   * a caller could book another organization's room by passing its id — the
+   * booking would be written into their own tenant, but the room it reserves
+   * belongs to someone else.
+   *
+   * @throws {Error} "Resource not found in this organization." — no such
+   *   resource in this tenant.
+   * @throws {Error} "Resource is not available during the requested time."
    */
   async createBooking(
     resourceId,
@@ -64,6 +81,15 @@ class ResourceBookingService {
     endTime,
     organizationId,
   ) {
+    const resource = await PhysicalResource.findOne({
+      _id: resourceId,
+      organization: organizationId,
+    });
+
+    if (!resource) {
+      throw new Error("Resource not found in this organization.");
+    }
+
     const isAvailable = await this.checkAvailability(
       resourceId,
       startTime,
@@ -85,17 +111,26 @@ class ResourceBookingService {
   }
 
   /**
-   * Cancel (delete) a booking.
+   * Cancel (delete) a booking belonging to `organizationId`.
+   *
+   * @returns {Promise<object|null>} the deleted booking, or `null` when there
+   *   is no such booking in this organization.
    */
-  async cancelBooking(bookingId) {
-    return await ResourceBooking.findByIdAndDelete(bookingId);
+  async cancelBooking(bookingId, organizationId) {
+    return await ResourceBooking.findOneAndDelete({
+      _id: bookingId,
+      organization: organizationId,
+    });
   }
 
   /**
-   * Get bookings for a specific meeting.
+   * Get bookings for a specific meeting within an organization.
    */
-  async getBookingsForMeeting(meetingId) {
-    return await ResourceBooking.find({ meetingId }).populate("resourceId");
+  async getBookingsForMeeting(meetingId, organizationId) {
+    return await ResourceBooking.find({
+      meetingId,
+      organization: organizationId,
+    }).populate("resourceId");
   }
 
   /**
