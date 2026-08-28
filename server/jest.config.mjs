@@ -68,6 +68,5 @@ export default {
     "translationAuthorization.test.js",
     "policyComplianceRoutePrefix.test.js",
     "knowledgeGraphRouteMount.test.js",
-    "customRoleRouteMount.test.js",
   ],
 };
